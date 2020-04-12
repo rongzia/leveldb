@@ -17,9 +17,11 @@ class MemTable;
 class WriteBatchInternal {
  public:
   // Return the number of entries in the batch.
+  // 返回WriteBatch中的 KV 数目， 由rep_[8], rep_[9], rep_[10], rep_[11]四个字节组成
   static int Count(const WriteBatch* batch);
 
   // Set the count for the number of entries in the batch.
+  // 设置 count值, 通常 n=WriteBatchInternal::Count(this) + 1, 详见 WriteBatch::Put
   static void SetCount(WriteBatch* batch, int n);
 
   // Return the sequence number for the start of this batch.

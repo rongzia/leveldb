@@ -42,6 +42,11 @@ class WritableFile;
 // Return the smallest index i such that files[i]->largest >= key.
 // Return files.size() if there is no such file.
 // REQUIRES: "files" contains a sorted list of non-overlapping files.
+    // 给定一组 FileMetaData[], 二分查找，找出 key 可能所在的 FileMetaData,
+    // 需要保证 FileMetaData[] 有序, 且没有键的重叠
+    // 返回所在文件的索引 (0 < 索引 < file.size()), 若没有找到, 返回 file.size()
+    // 由于 files 是有序的，这里只找了第一个 key<largest_key 的文件，但是很有可能 key<smallist_key
+    // 所以只是有可能存在于某个 file 中
 int FindFile(const InternalKeyComparator& icmp,
              const std::vector<FileMetaData*>& files, const Slice& key);
 
@@ -51,6 +56,7 @@ int FindFile(const InternalKeyComparator& icmp,
 // largest==nullptr represents a key largest than all keys in the DB.
 // REQUIRES: If disjoint_sorted_files, files[] contains disjoint ranges
 //           in sorted order.
+    // 返回 [*smallest_user_key, *largest_user_key] 是否存在于 level[i] 的文件 files 中
 bool SomeFileOverlapsRange(const InternalKeyComparator& icmp,
                            bool disjoint_sorted_files,
                            const std::vector<FileMetaData*>& files,
@@ -70,20 +76,34 @@ class Version {
   // Append to *iters a sequence of iterators that will
   // yield the contents of this Version when merged together.
   // REQUIRES: This version has been saved (see VersionSet::SaveTo)
+        // *iters 指向一组迭代器，迭代各层的文件
+        // 具体指向：
+        //      iter[0] -> files_[0][0]
+        //      iter[i] -> files_[0][i]
+        //      iter[n] -> files_[0][n]
+        //      iter[n+1] -> files_[1]
+        //      iter[n+i] -> files_[i] (i>1)
+        //      iter[n+3] -> files_[n]
+        // 这里 files_[0][i]、files_[i] 并不是文件，而是这个迭代器指向的二级迭代器
+        // 二级迭代器的概念见 table 中的定义
   void AddIterators(const ReadOptions&, std::vector<Iterator*>* iters);
 
+        // 给定 key,查找 value
+        // 先查找 level[0],然后 level[i] (i>0)
   Status Get(const ReadOptions&, const LookupKey& key, std::string* val,
              GetStats* stats);
 
   // Adds "stats" into the current state.  Returns true if a new
   // compaction may need to be triggered, false otherwise.
   // REQUIRES: lock is held
+        // 用于判断是否执行 DB::Impl::MaybeScheduleCompaction()
   bool UpdateStats(const GetStats& stats);
 
   // Record a sample of bytes read at the specified internal key.
   // Samples are taken approximately once every config::kReadBytesPeriod
   // bytes.  Returns true if a new compaction may need to be triggered.
   // REQUIRES: lock is held
+        // 用于判断是否执行 DB::Impl::MaybeScheduleCompaction()
   bool RecordReadSample(Slice key);
 
   // Reference count management (so Versions do not disappear out from
@@ -91,6 +111,8 @@ class Version {
   void Ref();
   void Unref();
 
+        // 给定 begin、end, 返回该层中，哪些文件和这个范围内的数据项有重合
+        // 返回的是 inputs
   void GetOverlappingInputs(
       int level,
       const InternalKey* begin,  // nullptr means before all keys
@@ -101,11 +123,18 @@ class Version {
   // some part of [*smallest_user_key,*largest_user_key].
   // smallest_user_key==nullptr represents a key smaller than all the DB's keys.
   // largest_user_key==nullptr represents a key largest than all the DB's keys.
+        // 返回 [*smallest_user_key, *largest_user_key] 是否存在于 level 中
   bool OverlapInLevel(int level, const Slice* smallest_user_key,
                       const Slice* largest_user_key);
 
   // Return the level at which we should place a new memtable compaction
   // result that covers the range [smallest_user_key,largest_user_key].
+        // DB::Impl::WriteLevel0Table() 在讲 memtable 刷盘时，先构建 FileMetaData,写入 memtable 数据
+        // 然后这个 FileMetaData 必然要添加到某个 version 的 level 和 files_ 中去
+        // 这里并没有直接写入 level[0]
+        //      而是先判断 memtable 中的数据和 0 层有没有重合，
+        //          若有，则添加到 0 层，后面要compation
+        //          若没有，找到合适的 i 层(i > 0),这里合适指 memtable 和 i 层 也没有重合，则直接放到 i 层
   int PickLevelForMemTableOutput(const Slice& smallest_user_key,
                                  const Slice& largest_user_key);
 
@@ -120,6 +149,7 @@ class Version {
 
   class LevelFileNumIterator;
 
+        // 返回 level[i] (i>0) 二级迭代器，Version::AddIterators() 会用到
   explicit Version(VersionSet* vset)
       : vset_(vset),
         next_(this),
@@ -142,6 +172,7 @@ class Version {
   // false, makes no more calls.
   //
   // REQUIRES: user portion of internal_key == user_key.
+        // Version::RecordReadSample() 会用到
   void ForEachOverlapping(Slice user_key, Slice internal_key, void* arg,
                           bool (*func)(void*, int, FileMetaData*));
 
@@ -160,6 +191,10 @@ class Version {
   // Level that should be compacted next and its compaction score.
   // Score < 1 means compaction is not strictly needed.  These fields
   // are initialized by Finalize().
+        // 用于 VersionSet::Finalize(), 这个函数从某个 version 中选出某一 level 用于合并，
+        // 该level 一定是最需要合并的
+        // 如何判断最需要合并 ? 每层都定义了 MaxBytesForLevel(), 用当前层的所有文件大小/MaxBytesForLevel(),
+        // 得分最大，则更新 compaction_score_、compaction_level_
   double compaction_score_;
   int compaction_level_;
 };
@@ -231,6 +266,10 @@ class VersionSet {
   // Returns nullptr if there is no compaction to be done.
   // Otherwise returns a pointer to a heap-allocated object that
   // describes the compaction.  Caller should delete the result.
+        // leveldb 中有两种情况会触发合并操作：
+        //      1 是 compaction_score_ > 1, 即当前层的文件总大小大于 MaxFileSizeForLevel()
+        //      2 是 seeks 引起的 TODO: what does seeks mean?
+        // leveldb 更倾向于由 compaction_score_ > 1 引起的合并
   Compaction* PickCompaction();
 
   // Return a compaction object for compacting the range [begin,end] in
@@ -242,13 +281,19 @@ class VersionSet {
 
   // Return the maximum overlapping data (in bytes) at next level for any
   // file at a level >= 1.
+        // 从 level >= 1开始，寻找 file[level][i] 中和 level+1 重叠的文件总数
+        // 返回 file[level+1] 中这些文件总大小
+        // 注意是 level 中单个文件和 level+1 中所有文件比较
+        // 而不是 level 中所有文件和 level+1 中所有文件比较
   int64_t MaxNextLevelOverlappingBytes();
 
   // Create an iterator that reads over the compaction inputs for "*c".
   // The caller should delete the iterator when no longer needed.
+        // 和 merger.h 中 NewMergingIterator() 呼应上
   Iterator* MakeInputIterator(Compaction* c);
 
   // Returns true iff some level needs a compaction.
+        // 关于 compaction_score_ 和 file_to_compact_，见 PickCompaction()
   bool NeedsCompaction() const {
     Version* v = current_;
     return (v->compaction_score_ >= 1) || (v->file_to_compact_ != nullptr);
@@ -256,10 +301,14 @@ class VersionSet {
 
   // Add all files listed in any live version to *live.
   // May also mutate some internal state.
+        // 这里 live 指系统中现有所有文件
+        // 迭代每个 version, 然后把 version.files_ 中的所有文件号添加到 lives 中
   void AddLiveFiles(std::set<uint64_t>* live);
 
   // Return the approximate offset in the database of the data for
   // "key" as of version "v".
+        // 返回某个 Version 版本中 key 对应的偏移量
+        // 这个偏移量为之前所有小于 key 的文件大小 加上 该 key 所在 SSTable 内的偏移量
   uint64_t ApproximateOffsetOf(Version* v, const InternalKey& key);
 
   // Return a human-readable short (single-line) summary of the number
@@ -267,6 +316,8 @@ class VersionSet {
   struct LevelSummaryStorage {
     char buffer[100];
   };
+        // 返回各层 level 包含的 SSTable 文件数量
+        // 示例:
   const char* LevelSummary(LevelSummaryStorage* scratch) const;
 
  private:
@@ -277,20 +328,35 @@ class VersionSet {
 
   bool ReuseManifest(const std::string& dscname, const std::string& dscbase);
 
+        // 这个函数从某个 version 中选出某一 level 用于合并，
+        // 该level 一定是最需要合并的
+        // 如何判断最需要合并 ? 每层都定义了 MaxBytesForLevel(), 用当前层的所有文件大小/MaxBytesForLevel(),
+        // 得分最大，则更新 compaction_score_、compaction_level_
   void Finalize(Version* v);
 
+        // 给定某层 level 的文件 inputs,
+        // 返回最小的 smallest 和最大的 largest InternalKey
   void GetRange(const std::vector<FileMetaData*>& inputs, InternalKey* smallest,
                 InternalKey* largest);
 
+        // 同样给定 2 个inputs,
+        // 返回最小的 smallest 和最大的 largest InternalKey
+        // 内部调用 GetRange 实现
   void GetRange2(const std::vector<FileMetaData*>& inputs1,
                  const std::vector<FileMetaData*>& inputs2,
                  InternalKey* smallest, InternalKey* largest);
 
+        // 此时 c 已经初始化, 即 c 的 level_、input_version_、inputs_ 等均非空
   void SetupOtherInputs(Compaction* c);
 
   // Save current contents to *log
+        // Save current contents to *log
+        // 内部构建 VersionEdit edit,
+        // 把 icmp_、 compact_pointer_、 current_->files_放入 edit,
+        // 然后把 edit.EncodeTo() 追加到 log 后
   Status WriteSnapshot(log::Writer* log);
 
+        // 在双向链表最后添加 Version 节点。current_ 指向新添加的节点。
   void AppendVersion(Version* v);
 
   Env* const env_;
@@ -339,18 +405,29 @@ class Compaction {
 
   // Is this a trivial compaction that can be implemented by just
   // moving a single input file to the next level (no merging or splitting)
+        // 判断当前层是否能直接放到下一层, 没有合并操作和键值范围重合
+        // 判断条件为:
+        //      当前层数 level 文件数量为 1
+        // &&   下层 level+1 文件数数量为 0
+        // &&   level + 2 层所有文件站磁盘总字节数 小于 20MB(10*options->max_file_size)
   bool IsTrivialMove() const;
 
   // Add all inputs to this compaction as delete operations to *edit.
+        // 把 level、level+1 层所有的文件标记为删除,
+        // 函数的作用就是把 level、level+1 层所有的文件
+        // 以 <level, FileMetaData.number> 格式添加到 VersionEdit.deleted_files_ 中
   void AddInputDeletions(VersionEdit* edit);
 
   // Returns true if the information we have available guarantees that
   // the compaction is producing data in "level+1" for which no data exists
   // in levels greater than "level+1".
+        // 用于判断是否 DB::Impl 合并操作中，是否要放弃这个 user_key
+        // 对于给定的 internal_key, 该函数确保该 internal_key 不会出现在 level[i]层(i>=level+2) 当中。
   bool IsBaseLevelForKey(const Slice& user_key);
 
   // Returns true iff we should stop building the current output
   // before processing "internal_key".
+        // 判断 output 是否过大(大于20MB)
   bool ShouldStopBefore(const Slice& internal_key);
 
   // Release the input version for the compaction, once the compaction
@@ -363,8 +440,8 @@ class Compaction {
 
   Compaction(const Options* options, int level);
 
-  int level_;
-  uint64_t max_output_file_size_;
+  int level_;     // 当前层, 将和 level + 1 层合并
+  uint64_t max_output_file_size_;   // 2MB (options->max_file_size;)
   Version* input_version_;
   VersionEdit edit_;
 

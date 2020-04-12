@@ -138,9 +138,11 @@ class InternalKey {
  public:
   InternalKey() {}  // Leave rep_ as empty to indicate it is invalid
   InternalKey(const Slice& user_key, SequenceNumber s, ValueType t) {
+            // 添加一个 InternalKey 到 rep_ 后
     AppendInternalKey(&rep_, ParsedInternalKey(user_key, s, t));
   }
 
+        // DecodeFrom 和 Encode 仅仅是 string 和 Slice 之间的转换
   bool DecodeFrom(const Slice& s) {
     rep_.assign(s.data(), s.size());
     return !rep_.empty();
@@ -151,8 +153,10 @@ class InternalKey {
     return rep_;
   }
 
+        // 即返回 InternalKey 中真正的 key(去除最后8 8 个字节)
   Slice user_key() const { return ExtractUserKey(rep_); }
 
+        // 用其他 InternalKey 初始化当前 rep_
   void SetFrom(const ParsedInternalKey& p) {
     rep_.clear();
     AppendInternalKey(&rep_, p);
@@ -185,6 +189,9 @@ class LookupKey {
  public:
   // Initialize *this for looking up user_key at a snapshot with
   // the specified sequence number.
+        // 根据 user_key 和 给定 sequence，构造一个 LookupKey
+        // 用于DB::Get()操作
+        // LookupKey 格式详见笔记
   LookupKey(const Slice& user_key, SequenceNumber sequence);
 
   LookupKey(const LookupKey&) = delete;

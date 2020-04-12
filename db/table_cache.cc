@@ -38,6 +38,9 @@ TableCache::TableCache(const std::string& dbname, const Options& options,
 
 TableCache::~TableCache() { delete cache_; }
 
+    // 根据文件编号 file_number, 查找缓存中是否存在某个 table 的缓存,
+    // 若存在，则 handle 指向对应的 struct LRUHandle,
+    // 若不存在, 则把该 table 放入缓存中, 再返回对应的 struct LRUHandle,
 Status TableCache::FindTable(uint64_t file_number, uint64_t file_size,
                              Cache::Handle** handle) {
   Status s;
@@ -50,6 +53,7 @@ Status TableCache::FindTable(uint64_t file_number, uint64_t file_size,
     RandomAccessFile* file = nullptr;
     Table* table = nullptr;
     s = env_->NewRandomAccessFile(fname, &file);
+            // 若不是 ldb 后缀, 则找 sst 后缀
     if (!s.ok()) {
       std::string old_fname = SSTTableFileName(dbname_, file_number);
       if (env_->NewRandomAccessFile(old_fname, &file).ok()) {
@@ -111,6 +115,7 @@ Status TableCache::Get(const ReadOptions& options, uint64_t file_number,
   return s;
 }
 
+    // 从缓存中删除 file_number 的table
 void TableCache::Evict(uint64_t file_number) {
   char buf[sizeof(file_number)];
   EncodeFixed64(buf, file_number);

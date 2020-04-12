@@ -45,6 +45,19 @@ class LEVELDB_EXPORT Comparator {
   // If *start < limit, changes *start to a short string in [start,limit).
   // Simple comparator implementations may return with *start unchanged,
   // i.e., an implementation of this method that does nothing is correct.
+        // 最原始的实现在 comparator.cc 中
+        // 这个函数主要用在 TableBuilder::Add() 函数中调用
+
+        // 什么作用呢？
+        // 举个例子：
+        // 1. 假设传进来两个 key: "the who" 和 "the whose"
+        //    那么该函数会将 start 的值改为 “the who"
+        // 2. 假设传进来两个 key: "the quick brown fox" 和 "the who"
+        //    那么该函数会将 start 的值改为 “the r"
+        // 3. 假设传进来两个 key: "the quick brown fox" 和 "the reason"
+        //    那么该函数会将 start 的值改为 “the q"
+
+        // 这么做的目的是什么呢？ 让 start 字符串长度尽可能的短，且不能小于原始的 start 值
   virtual void FindShortestSeparator(std::string* start,
                                      const Slice& limit) const = 0;
 

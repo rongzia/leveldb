@@ -71,6 +71,9 @@ class VersionEdit {
   }
 
   // Delete the specified "file" from the specified "level".
+        // Delete the specified "file" from the specified "level".
+        // 记录需要删除的 SSTable 文件
+        // 格式为: <level, FileMetaData.number>
   void RemoveFile(int level, uint64_t file) {
     deleted_files_.insert(std::make_pair(level, file));
   }
@@ -96,6 +99,8 @@ class VersionEdit {
   bool has_next_file_number_;
   bool has_last_sequence_;
 
+        // VersionSet::SetupOtherInputs(Compaction *c) 中有这么一句：
+        // c->edit_.SetCompactPointer(level, largest);
   std::vector<std::pair<int, InternalKey>> compact_pointers_;
   DeletedFileSet deleted_files_;
   std::vector<std::pair<int, FileMetaData>> new_files_;

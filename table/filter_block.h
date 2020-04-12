@@ -50,6 +50,28 @@ class FilterBlockBuilder {
   std::vector<uint32_t> filter_offsets_;
 };
 
+//    filter 格式和 class FilterBlockReader 成员变量指向关系如下:
+
+
+//    data_
+//    +---------------------+
+//    | filter[1] : string  |
+//    +---------------------+
+//    +---------------------+
+//    | filter[2] : string  |
+//    +---------------------+
+//    ...
+//    +---------------------+
+//    | filter[n] : string  |
+//    +---------------------+
+//    offset_
+//    +----------------------+----------------------+-------+----------------------+-----------------------------------+---------------+
+//    | offset[1] : uint32   | offset[2] : uint32   | ...   | offset[n] : uint32   | sum(sizeof(filter[i])) : uint32   | baselg : uint8|
+//    +----------------------+----------------------+-------+----------------------+-----------------------------------+---------------+
+
+//    上面的 filter[i] 是 filter data,
+//          offset[i] 是 offset array
+//    sum(sizeof(filter[i])) = offset_ - data_
 class FilterBlockReader {
  public:
   // REQUIRES: "contents" and *policy must stay live while *this is live.

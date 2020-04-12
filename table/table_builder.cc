@@ -35,12 +35,13 @@ struct TableBuilder::Rep {
     index_block_options.block_restart_interval = 1;
   }
 
+// data_block 相关:
   Options options;
-  Options index_block_options;
+  Options index_block_options; // =options, 且 block_restart_interval=1
   WritableFile* file;
   uint64_t offset;
   Status status;
-  BlockBuilder data_block;
+  BlockBuilder data_block;    // 用于构建当前data block, flush 之后会清空
   BlockBuilder index_block;
   std::string last_key;
   int64_t num_entries;
@@ -56,10 +57,19 @@ struct TableBuilder::Rep {
   // blocks.
   //
   // Invariant: r->pending_index_entry is true only if data_block is empty.
+  // 每个 data_block 达到大小阈值时,就应该写入文件，
+        // 然后会产生一个 BlockHandle 来记录这个 data_block 在 file 中的起始位置和长度
+        // 紧接着就把这个 BlockHandle 以 <data_block->last_key, BlockHandle> 格式写入到 index_block 当中，
+        // ! 但是这里并不是这么快就执行这个 <data_block->last_key, BlockHandle> 写入的
+        // 原因是 data_block->last_key 可能过长，浪费空间，需要等待下个 key 进来，
+        // 我们需要找到 data_block->last_key 和 下个 key 之间，尽可能大于等于 data_block->last_key 并且最短的 key
+        // 之后才会 <data_block->new_last_key, BlockHandle> 写入 index_block
+
+        // 所以才会需要下面两个变量来记录相关值
   bool pending_index_entry;
   BlockHandle pending_handle;  // Handle to add to index block
 
-  std::string compressed_output;
+  std::string compressed_output;  // 用于存放 data_block 压缩数据，每次 flush 之后清空
 };
 
 TableBuilder::TableBuilder(const Options& options, WritableFile* file)
@@ -91,6 +101,12 @@ Status TableBuilder::ChangeOptions(const Options& options) {
   return Status::OK();
 }
 
+    // 添加一个 entry 进 data_block
+    // r->pending_handle.EncodeTo(&handle_encoding);
+    // r->index_block.Add(r->last_key, Slice(handle_encoding));
+    // r->pending_index_entry = false;
+    // r->filter_block->AddKey(key);
+    // Flush();
 void TableBuilder::Add(const Slice& key, const Slice& value) {
   Rep* r = rep_;
   assert(!r->closed);
@@ -99,7 +115,8 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
     assert(r->options.comparator->Compare(key, Slice(r->last_key)) > 0);
   }
 
-  if (r->pending_index_entry) {
+        // 新的 data_block 初始化时，触发 index_block 写入上一个 data_block 的 BlockHandle
+  if (r->pending_index_entry) {   // 初始为 false
     assert(r->data_block.empty());
     r->options.comparator->FindShortestSeparator(&r->last_key, key);
     std::string handle_encoding;
@@ -109,6 +126,7 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
   }
 
   if (r->filter_block != nullptr) {
+//            r->filter_block->AddKey(key);   // 向布隆过滤器添加值
     r->filter_block->AddKey(key);
   }
 
@@ -116,12 +134,17 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
   r->num_entries++;
   r->data_block.Add(key, value);
 
+        // 当前 data_block 大小达到 options 定义的 4KB，就刷一次盘
   const size_t estimated_block_size = r->data_block.CurrentSizeEstimate();
   if (estimated_block_size >= r->options.block_size) {
     Flush();
   }
 }
 
+    // 调用  WriteBlock(&r->data_block, &r->pending_handle);
+    // 刷新 file 缓冲区
+    // r->pending_index_entry = true;
+    // r->filter_block->StartBlock(r->offset);
 void TableBuilder::Flush() {
   Rep* r = rep_;
   assert(!r->closed);
@@ -131,13 +154,18 @@ void TableBuilder::Flush() {
   WriteBlock(&r->data_block, &r->pending_handle);
   if (ok()) {
     r->pending_index_entry = true;
-    r->status = r->file->Flush();
+    r->status = r->file->Flush();   // WritableFile 有个缓冲区，该函数刷新缓冲区进文件
   }
   if (r->filter_block != nullptr) {
     r->filter_block->StartBlock(r->offset);
   }
 }
 
+    // 获取 block_contents，
+    // 若压缩，压缩后的值写入 rep_.compressed_output
+    // 调用 WriteRawBlock(block_contents, type, rep_.pending_handle)
+    // rep_.compressed_output 清空
+    // rep_.data_block 清空
 void TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
   // File format contains a sequence of blocks where each block has:
   //    block_data: uint8[n]
@@ -145,7 +173,7 @@ void TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
   //    crc: uint32
   assert(ok());
   Rep* r = rep_;
-  Slice raw = block->Finish();
+  Slice raw = block->Finish();    // 该函数返回 BlockBuilder 缓冲区内容
 
   Slice block_contents;
   CompressionType type = r->options.compression;
@@ -174,6 +202,11 @@ void TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
   block->Reset();
 }
 
+    // pending_handle
+    // 写入 data block 的 block_contents
+    // 构建 data block 的 type+crc，
+    // 写入 type+crc，
+    // 更新rep_.offset
 void TableBuilder::WriteRawBlock(const Slice& block_contents,
                                  CompressionType type, BlockHandle* handle) {
   Rep* r = rep_;
@@ -258,6 +291,8 @@ void TableBuilder::Abandon() {
   r->closed = true;
 }
 
+    // DBImpl::FinishCompactionOutputFile() 中打日志使用
+    // DBImpl::DoCompactionWork() 中为文件创建 smallest_key 使用
 uint64_t TableBuilder::NumEntries() const { return rep_->num_entries; }
 
 uint64_t TableBuilder::FileSize() const { return rep_->offset; }

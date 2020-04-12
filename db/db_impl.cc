@@ -542,6 +542,8 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   return s;
 }
 
+    // VersionEdit 记录当前 log_file
+    // 然后设置 imm_ = nullptr
 void DBImpl::CompactMemTable() {
   mutex_.AssertHeld();
   assert(imm_ != nullptr);
@@ -655,6 +657,8 @@ void DBImpl::RecordBackgroundError(const Status& s) {
   }
 }
 
+    // 前面的 if 语句排除小概率事件
+    // 最主要在最后一个 if 语句, 调用 BackgroundCall()
 void DBImpl::MaybeScheduleCompaction() {
   mutex_.AssertHeld();
   if (background_compaction_scheduled_) {
@@ -676,6 +680,11 @@ void DBImpl::BGWork(void* db) {
   reinterpret_cast<DBImpl*>(db)->BackgroundCall();
 }
 
+    // 前面的 if 语句排除小概率事件
+    // 最主要在最后一个 if 语句, 调用 BackgroundCompaction()
+    // 然后设置 background_compaction_scheduled_ = false;
+    // 若必要，再调用一次 MaybeScheduleCompaction()
+    //
 void DBImpl::BackgroundCall() {
   MutexLock l(&mutex_);
   assert(background_compaction_scheduled_);
@@ -689,12 +698,22 @@ void DBImpl::BackgroundCall() {
 
   background_compaction_scheduled_ = false;
 
+        // BackgroundCompaction() 只是选出一层，然后合并一层到下一层
+        // 可能这一层只是 imm_, 只是调用了 CompactMemTable()(将 imm_ 写入后）就返回
+        // 也可能合并 第 i 层后，第 j 层扔然需要合并
   // Previous compaction may have produced too many files in a level,
   // so reschedule another compaction if needed.
   MaybeScheduleCompaction();
   background_work_finished_signal_.SignalAll();
 }
 
+    // 先 CompactMemTable(); 完成后返回。 不用合并其他层吗? 交给上层函数 BackgroundCall() 决定。
+    // 再 c = versions_->PickCompaction(), 选出哪一层该合并
+    // if (!is_manual && c->IsTrivialMove()) 可以直接放到 level+1 层
+    // else{  执行最常见的合并操作
+    //  CompactionState *compact = new CompactionState(c);
+    //  status = DoCompactionWork(compact);
+    // }
 void DBImpl::BackgroundCompaction() {
   mutex_.AssertHeld();
 
@@ -937,6 +956,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       }
     }
 
+            // 这里判断是否该 input->key() 要输出到合并文件 outputfile 中
     // Handle key/value, add to state, etc.
     bool drop = false;
     if (!ParseInternalKey(key, &ikey)) {
@@ -945,6 +965,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       has_current_user_key = false;
       last_sequence_for_key = kMaxSequenceNumber;
     } else {
+      // 成功解析 input->key() 到 current_user_key
       if (!has_current_user_key ||
           user_comparator()->Compare(ikey.user_key, Slice(current_user_key)) !=
               0) {
@@ -954,6 +975,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         last_sequence_for_key = kMaxSequenceNumber;
       }
 
+      // 解析出来的 sequence 有问题，居然大于 kMaxSequenceNumber，立即放弃（drop = true）
       if (last_sequence_for_key <= compact->smallest_snapshot) {
         // Hidden by an newer entry for same user key
         drop = true;  // (A)
@@ -981,6 +1003,10 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         compact->compaction->IsBaseLevelForKey(ikey.user_key),
         (int)last_sequence_for_key, (int)compact->smallest_snapshot);
 #endif
+            // 将单个 input->key() 输出到文件 outputfile 中
+            // 先判断 compact->builder 是否为空，为空代表还没有输出文件，OpenCompactionOutputFile() 需要新建一个文件作为输出
+            // 然后 compact->builder 向文件中添加 key/value 对，
+            // 要是文件大小到一定程度，调用 FinishCompactionOutputFile() 关闭这个文件
 
     if (!drop) {
       // Open output file if necessary
@@ -1035,6 +1061,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   mutex_.Lock();
   stats_[compact->compaction->level() + 1].Add(stats);
 
+  // 到这一步才把 CompactionStats 中输出文件outputfiles 的记录添加到 VersionEdit 需要的 compaction 中去
   if (status.ok()) {
     status = InstallCompactionResults(compact);
   }
@@ -1199,21 +1226,31 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   w.sync = options.sync;
   w.done = false;
 
+  // 所有 Put() 在此阻塞, 主线程将 w push 到 writers_ 中
   MutexLock l(&mutex_);
   writers_.push_back(&w);
   while (!w.done && &w != writers_.front()) {
+    // 会释放锁，其他 w 可以获取锁，并取得 writers_ 写权限
     w.cv.Wait();
   }
   if (w.done) {
     return w.status;
   }
 
+        // 到这里说明当前 w 处于队列 writers_ 头部, 被选中作为执行线程
+        // May temporarily unlock and wait.
+        // 确保 memtable 有剩余空间, 执行完后, memtable 一定有剩余空间
   // May temporarily unlock and wait.
   Status status = MakeRoomForWrite(updates == nullptr);
   uint64_t last_sequence = versions_->LastSequence();
   Writer* last_writer = &w;
   if (status.ok() && updates != nullptr) {  // nullptr batch is for compactions
+            // 将队列后面的 WriteBatch 合并到 updates 中,
+            // 此时处于lock状态, writers_ 不会改变
+            // last_writer 在调用后, 指向 writers_ 中最后一个
     WriteBatch* write_batch = BuildBatchGroup(&last_writer);
+            // 同一组 writers_ 中的 operation 有同一个 sequence???
+            // no!!! 详见 WriteBatchInternal::InsertInto
     WriteBatchInternal::SetSequence(write_batch, last_sequence + 1);
     last_sequence += WriteBatchInternal::Count(write_batch);
 
@@ -1247,6 +1284,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     versions_->SetLastSequence(last_sequence);
   }
 
+        // last_writer 指向队尾
   while (true) {
     Writer* ready = writers_.front();
     writers_.pop_front();
@@ -1259,6 +1297,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   }
 
   // Notify new head of write queue
+        // 这里有点疑问, 所没有释放, writers_ 应该为空
   if (!writers_.empty()) {
     writers_.front()->cv.Signal();
   }
@@ -1318,6 +1357,8 @@ WriteBatch* DBImpl::BuildBatchGroup(Writer** last_writer) {
 
 // REQUIRES: mutex_ is held
 // REQUIRES: this thread is currently at the front of the writer queue
+    // force = (my_batch == nullptr), 一般取 false
+    // 表示是否强制开启 another compaction
 Status DBImpl::MakeRoomForWrite(bool force) {
   mutex_.AssertHeld();
   assert(!writers_.empty());
@@ -1330,6 +1371,8 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       break;
     } else if (allow_delay && versions_->NumLevelFiles(0) >=
                                   config::kL0_SlowdownWritesTrigger) {
+                // 第 0 层的 SSTable 文件数量大于等于 kL0_SlowdownWritesTrigger(8)
+                // 数据库主线程短暂睡眠，等待 0 层文件合并
       // We are getting close to hitting a hard limit on the number of
       // L0 files.  Rather than delaying a single write by several
       // seconds when we hit the hard limit, start delaying each
@@ -1340,20 +1383,36 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       env_->SleepForMicroseconds(1000);
       allow_delay = false;  // Do not delay a single write more than once
       mutex_.Lock();
-    } else if (!force &&
+    }
+                // write_buffer_size = 4MB
+                // mem 仍有空间
+    else if (!force &&
                (mem_->ApproximateMemoryUsage() <= options_.write_buffer_size)) {
       // There is room in current memtable
       break;
-    } else if (imm_ != nullptr) {
+    }
+                // mem 没有空间，且 imm 也已写满
+                // 线程在此阻塞
+    else if (imm_ != nullptr) {
       // We have filled up the current memtable, but the previous
       // one is still being compacted, so we wait.
       Log(options_.info_log, "Current memtable full; waiting...\n");
       background_work_finished_signal_.Wait();
-    } else if (versions_->NumLevelFiles(0) >= config::kL0_StopWritesTrigger) {
+    // 这里会等待 DoCompactionWork() 函数中的 background_work_finished_signal_.SingalAll()
+    }
+    // 0 层文件数量太多（达到12个）
+    else if (versions_->NumLevelFiles(0) >= config::kL0_StopWritesTrigger) {
       // There are too many level-0 files.
       Log(options_.info_log, "Too many L0 files; waiting...\n");
       background_work_finished_signal_.Wait();
-    } else {
+      }
+
+    // 上面第一次阻塞会等待调用 CompactMemTable(), 即把当前 logfile_ 记录到 VersionEdit
+    // 同时会释放 imm_, 所以这里 imm_ 一定为空,
+    else {
+                // 新建一个新 log_file, 直接删除当前 log_file，然后修改当前 log 相关指针
+                // imm_ = mem_
+                // mem_ = new memtable()
       // Attempt to switch to a new memtable and trigger compaction of old
       assert(versions_->PrevLogNumber() == 0);
       uint64_t new_log_number = versions_->NewFileNumber();
@@ -1464,7 +1523,7 @@ void DBImpl::GetApproximateSizes(const Range* range, int n, uint64_t* sizes) {
 // can call if they wish
 Status DB::Put(const WriteOptions& opt, const Slice& key, const Slice& value) {
   WriteBatch batch;
-  batch.Put(key, value);
+  batch.Put(key, value);   //仅仅放到 WriteBatch::rep_ 中去
   return Write(opt, &batch);
 }
 
@@ -1478,7 +1537,7 @@ DB::~DB() = default;
 
 Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
   *dbptr = nullptr;
-
+//实例化 DBImpl
   DBImpl* impl = new DBImpl(options, dbname);
   impl->mutex_.Lock();
   VersionEdit edit;

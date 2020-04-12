@@ -35,6 +35,10 @@ struct Table::Rep {
   Block* index_block;
 };
 
+    // 先从 RandomAccessFile 获取并构建 Footer,
+    // 再 ReadBlock() 获取 BlockContents, 用于构建 Block,
+    // 接着构建 Rep、 table, 并 (*table)->ReadMeta(footer);
+    // 返回 *table
 Status Table::Open(const Options& options, RandomAccessFile* file,
                    uint64_t size, Table** table) {
   *table = nullptr;
@@ -42,8 +46,9 @@ Status Table::Open(const Options& options, RandomAccessFile* file,
     return Status::Corruption("file is too short to be an sstable");
   }
 
-  char footer_space[Footer::kEncodedLength];
+  char footer_space[Footer::kEncodedLength];  // kEncodedLength = 10+10+8
   Slice footer_input;
+        // 从 offset 处读取 n 个字节到 scratch ，result 是由 scratch 构造的对象
   Status s = file->Read(size - Footer::kEncodedLength, Footer::kEncodedLength,
                         &footer_input, footer_space);
   if (!s.ok()) return s;
@@ -81,6 +86,9 @@ Status Table::Open(const Options& options, RandomAccessFile* file,
   return s;
 }
 
+    // 这个函数并没有任何返回值....
+    // 只是通过 block::iter->Seek("filter+rep_->options.filter_policy->Name())
+    // 读了一下filter的值.....
 void Table::ReadMeta(const Footer& footer) {
   if (rep_->options.filter_policy == nullptr) {
     return;  // Do not need any metadata

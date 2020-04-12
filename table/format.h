@@ -24,6 +24,7 @@ struct ReadOptions;
 class BlockHandle {
  public:
   // Maximum encoding length of a BlockHandle
+        // 将 offset_ 和 size_ 采用变长编码至少要 20 字节
   enum { kMaxEncodedLength = 10 + 10 };
 
   BlockHandle();
@@ -63,6 +64,12 @@ class Footer {
   const BlockHandle& index_handle() const { return index_handle_; }
   void set_index_handle(const BlockHandle& h) { index_handle_ = h; }
 
+        // TableBuilder::Finish() 处调用
+        // dst 为未初始化的空 string
+        // 之前存在过疑问，metaindex_handle_ 和 index_handle_ 采用变长编码，
+        // 也就是说，可能占不满 40 字节，那么会不会影响解码？ 因为解码都是从 file.size()-48 处开始解码。
+        // 这里采用的是  dst->resize(48), 一定会占用 48 字节，用不完的使用 '\0' 填充
+        // resize() 和 reserve() 还是有区别的
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(Slice* input);
 
@@ -77,6 +84,8 @@ class Footer {
 static const uint64_t kTableMagicNumber = 0xdb4775248b80fb57ull;
 
 // 1-byte type + 32-bit crc
+    // 用于 data_block,
+    // data_block 由 BlockContents.data + 1 byte 压缩标志 + 32 bits crc 组成
 static const size_t kBlockTrailerSize = 5;
 
 struct BlockContents {

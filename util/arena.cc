@@ -17,6 +17,10 @@ Arena::~Arena() {
   }
 }
 
+    // 当上一个 block 空间不够时，调用该函数
+    // 1. 如果需要的空间大小大于 4096/4 bytes，直接分配一块 bytes 大小的空间然后返回；
+    // 2. 如果需要的空间较小，则分配一块 4096 的块，然后一点点地分配给调用对象。
+    // 所以第2种情况可能调用 AllocateNewBlock() 函数
 char* Arena::AllocateFallback(size_t bytes) {
   if (bytes > kBlockSize / 4) {
     // Object is more than a quarter of our block size.  Allocate it separately
@@ -35,6 +39,8 @@ char* Arena::AllocateFallback(size_t bytes) {
   return result;
 }
 
+    // 分配内存对齐的空间,
+    // 同样可能会调用 AllocateFallback()
 char* Arena::AllocateAligned(size_t bytes) {
   const int align = (sizeof(void*) > 8) ? sizeof(void*) : 8;
   static_assert((align & (align - 1)) == 0,
@@ -55,6 +61,7 @@ char* Arena::AllocateAligned(size_t bytes) {
   return result;
 }
 
+    // 分配一个 4096 大小的块，并加入到 blocks_
 char* Arena::AllocateNewBlock(size_t block_bytes) {
   char* result = new char[block_bytes];
   blocks_.push_back(result);

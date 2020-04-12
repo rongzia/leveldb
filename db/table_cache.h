@@ -42,9 +42,13 @@ class TableCache {
              void (*handle_result)(void*, const Slice&, const Slice&));
 
   // Evict any entry for the specified file number
+        // 从缓存中删除 file_number 的 table
   void Evict(uint64_t file_number);
 
  private:
+        // 根据文件编号 file_number, 查找缓存中是否存在某个 table 的缓存,
+        // 若存在，则 handle 指向对应的 struct LRUHandle,
+        // 若不存在, 则把该 table 放入缓存中, 再返回对应的 struct LRUHandle,
   Status FindTable(uint64_t file_number, uint64_t file_size, Cache::Handle**);
 
   Env* const env_;

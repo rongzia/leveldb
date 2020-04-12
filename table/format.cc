@@ -20,7 +20,9 @@ void BlockHandle::EncodeTo(std::string* dst) const {
   PutVarint64(dst, size_);
 }
 
+    // 传入编码后的 BlockHandle
 Status BlockHandle::DecodeFrom(Slice* input) {
+        // GetVarint64 会将 input.data指针前移
   if (GetVarint64(input, &offset_) && GetVarint64(input, &size_)) {
     return Status::OK();
   } else {
@@ -28,6 +30,12 @@ Status BlockHandle::DecodeFrom(Slice* input) {
   }
 }
 
+    // TableBuilder::Finish() 处调用
+    // dst 为未初始化的空 string
+    // 之前存在过疑问，metaindex_handle_ 和 index_handle_ 采用变长编码，
+    // 也就是说，可能占不满 40 字节，那么会不会影响解码？ 因为解码都是从 file.size()-48 处开始解码。
+    // 这里采用的是  dst->resize(48), 一定会占用 48 字节，用不完的使用 '\0' 填充
+    // resize() 和 reserve() 还是有区别的
 void Footer::EncodeTo(std::string* dst) const {
   const size_t original_size = dst->size();
   metaindex_handle_.EncodeTo(dst);
@@ -63,12 +71,15 @@ Status Footer::DecodeFrom(Slice* input) {
 
 Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
                  const BlockHandle& handle, BlockContents* result) {
+        // 初始化 BlockContents *result
   result->data = Slice();
   result->cachable = false;
   result->heap_allocated = false;
 
   // Read the block contents as well as the type/crc footer.
   // See table_builder.cc for the code that built this structure.
+        // 同时读取 block 块的内容和 type/crc
+        // 具体结构会在 table_builder.cc 中讲到
   size_t n = static_cast<size_t>(handle.size());
   char* buf = new char[n + kBlockTrailerSize];
   Slice contents;
@@ -83,6 +94,7 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
   }
 
   // Check the crc of the type and the block contents
+        // 校验 type 和 crc
   const char* data = contents.data();  // Pointer to where Read put the data
   if (options.verify_checksums) {
     const uint32_t crc = crc32c::Unmask(DecodeFixed32(data + n + 1));
@@ -94,6 +106,7 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
     }
   }
 
+        // 判断数据是否压缩，并进行相应解压缩
   switch (data[n]) {
     case kNoCompression:
       if (data != buf) {

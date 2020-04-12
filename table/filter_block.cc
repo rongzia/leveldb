@@ -44,6 +44,7 @@ Slice FilterBlockBuilder::Finish() {
   }
 
   PutFixed32(&result_, array_offset);
+        // 这里放进去的是个 size_t ,但是在字符串中只占一个字节！！！
   result_.push_back(kFilterBaseLg);  // Save encoding parameter in result
   return Slice(result_);
 }

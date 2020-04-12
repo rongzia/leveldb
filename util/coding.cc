@@ -152,6 +152,10 @@ const char* GetLengthPrefixedSlice(const char* p, const char* limit,
   return p + len;
 }
 
+    /*input 格式为: value.len + value,
+     *result 开始应该为不确定的值，最后返回 input当中表示Slice长度的指针 (char*，未转换成int)
+     *input->remove_prefix(len) 返回真正的value
+     */
 bool GetLengthPrefixedSlice(Slice* input, Slice* result) {
   uint32_t len;
   if (GetVarint32(input, &len) && input->size() >= len) {

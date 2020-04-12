@@ -25,6 +25,9 @@ class BloomFilterPolicy : public FilterPolicy {
 
   const char* Name() const override { return "leveldb.BuiltinBloomFilter2"; }
 
+            // 采用批量的方式建立一个过滤器，
+            // 传入 keys[], keys.size(), 以及一个字符串用于存放过滤器的比特位
+            // 具体实现是在 dst 的基础上往后追加，dst 原来的内容存放的是其他键值对的过滤信息
   void CreateFilter(const Slice* keys, int n, std::string* dst) const override {
     // Compute bloom filter size (in both bits and bytes)
     size_t bits = n * bits_per_key_;
@@ -53,6 +56,8 @@ class BloomFilterPolicy : public FilterPolicy {
     }
   }
 
+            // 这个函数较为简单，仅仅是给定一个 key 和一个 bloom_filter，
+            // 返回 bloom_filter 是否存放了该 key
   bool KeyMayMatch(const Slice& key, const Slice& bloom_filter) const override {
     const size_t len = bloom_filter.size();
     if (len < 2) return false;

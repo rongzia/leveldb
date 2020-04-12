@@ -17,6 +17,12 @@
 
 namespace leveldb {
 
+//  block 格式：
+//        string       string      Fixedint32       Fixedint32    Fixedint32
+//        +--------------+--------------+--------------+--------------+-----------------+
+//        | entries[0]   | entries[n]   | restart[0]   | restart[n]   | num_restarts    |
+//        +--------------+--------------+--------------+--------------+-----------------+
+    // 从文件尾部解析出 num_restarts
 inline uint32_t Block::NumRestarts() const {
   assert(size_ >= sizeof(uint32_t));
   return DecodeFixed32(data_ + size_ - sizeof(uint32_t));
@@ -52,13 +58,31 @@ Block::~Block() {
 //
 // If any errors are detected, returns nullptr.  Otherwise, returns a
 // pointer to the key delta (just past the three decoded values).
+//  block 格式：
+//                       p            limit
+//        +--------------+--------------+--------------+--------------+-----------------+
+//        | entries[0]   | entries[i]   | restart[0]   | restart[i]   | num_restarts    |
+//        +--------------+--------------+--------------+--------------+-----------------+
+
+    // 给定字符串头 *P 和串尾 *limit，返回三个值
+    // shared 表示和前一个 entry 共享的 key 的长度
+    // non_shared 表示除共享 key 剩下的长度
+    // value_length 表示 data 的长度
+
+    // 函数作用: 给定 restart point[i], p指向 entries[i] 首地址，然后找到第一个 entry
+    // 返回第一个 entry 的首地址
+    // 只找一个就行！而且是第一个！
+    // limit 用于保证不会越界
 static inline const char* DecodeEntry(const char* p, const char* limit,
                                       uint32_t* shared, uint32_t* non_shared,
                                       uint32_t* value_length) {
+        // 这两个 if 只是一个优化，真正用的多的还是下面的 else 分支
   if (limit - p < 3) return nullptr;
+        // 这里并不是说每个长度值都只占一个字节
   *shared = reinterpret_cast<const uint8_t*>(p)[0];
   *non_shared = reinterpret_cast<const uint8_t*>(p)[1];
   *value_length = reinterpret_cast<const uint8_t*>(p)[2];
+        // 代表每个长度都小于127， 即一位字节编码就够了。
   if ((*shared | *non_shared | *value_length) < 128) {
     // Fast path: all three values are encoded in one byte each
     p += 3;
@@ -67,15 +91,21 @@ static inline const char* DecodeEntry(const char* p, const char* limit,
     if ((p = GetVarint32Ptr(p, limit, non_shared)) == nullptr) return nullptr;
     if ((p = GetVarint32Ptr(p, limit, value_length)) == nullptr) return nullptr;
   }
-
+        // 若剩下字符串的长度不足 key 的 non_shared 部分长度加上value长度，则返回空
+        // 保证不会越界
   if (static_cast<uint32_t>(limit - p) < (*non_shared + *value_length)) {
     return nullptr;
   }
+        // p指向 key 和 value 的 data 部分
   return p;
 }
 
 class Block::Iter : public Iterator {
  private:
+//  block 格式：
+//        data_
+//        +------------+------------+--------------+--------------+-----------------+
+//        | entry[0]   | entry[n]   | restart[0]   | restart[n]   | num_restarts    |
   const Comparator* const comparator_;
   const char* const data_;       // underlying block contents
   uint32_t const restarts_;      // Offset of restart array (list of fixed32)
@@ -93,10 +123,12 @@ class Block::Iter : public Iterator {
   }
 
   // Return the offset in data_ just past the end of the current entry.
+        // 返回下一个 entry.shared 的偏移量
   inline uint32_t NextEntryOffset() const {
     return (value_.data() + value_.size()) - data_;
   }
 
+        // 返回 restart point[i] 指向的具体 entries[] 在文件中的偏移量
   uint32_t GetRestartPoint(uint32_t index) {
     assert(index < num_restarts_);
     return DecodeFixed32(data_ + restarts_ + index * sizeof(uint32_t));
@@ -108,6 +140,7 @@ class Block::Iter : public Iterator {
     // current_ will be fixed by ParseNextKey();
 
     // ParseNextKey() starts at the end of value_, so set value_ accordingly
+            // offset 记录了 restart point 内第一个 entry.value 的偏移量
     uint32_t offset = GetRestartPoint(index);
     value_ = Slice(data_ + offset, 0);
   }
@@ -161,12 +194,20 @@ class Block::Iter : public Iterator {
     } while (ParseNextKey() && NextEntryOffset() < original);
   }
 
+        // target 是某个 entry 的 key
+        // 先二分查找，使 restart_index_ 指向某个 index，
+        // 然后在该 entries[index] 不停内调用 ParseNextKey 知道找到对应的 target 为止
   void Seek(const Slice& target) override {
     // Binary search in restart array to find the last restart point
     // with a key < target
+            // left、right、mid 都是 restart point 的索引
+            // 范围为 [0, n]
     uint32_t left = 0;
     uint32_t right = num_restarts_ - 1;
     while (left < right) {
+                // 先 GetRestartPoint(mid) 找到 restart point[mid] 指向的具体 entries[mid] 的偏移量，
+                // 再根据此偏移量调用 DecodeEntry()，找到 entries[mid] 中第一个 entry 的 key+value首地址指针
+                // 即根据 entries[mid] 第一个 entry->key 的指针构造 mid_key
       uint32_t mid = (left + right + 1) / 2;
       uint32_t region_offset = GetRestartPoint(mid);
       uint32_t shared, non_shared, value_length;
@@ -206,6 +247,8 @@ class Block::Iter : public Iterator {
     ParseNextKey();
   }
 
+        // 使迭代器指向最后一个 entry
+        // 先 SeekToRestartPoint(), 使 value_.data() 指向 entries[n].shared 地址
   void SeekToLast() override {
     SeekToRestartPoint(num_restarts_ - 1);
     while (ParseNextKey() && NextEntryOffset() < restarts_) {

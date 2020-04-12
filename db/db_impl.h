@@ -190,13 +190,16 @@ class DBImpl : public DB {
 
   // Set of table files to protect from deletion because they are
   // part of ongoing compactions.
+        // 保存正在合并的所有文件的 number, 以免被误删
   std::set<uint64_t> pending_outputs_ GUARDED_BY(mutex_);
 
   // Has a background compaction been scheduled or is running?
+        // 是否有一个后台合并线程 been scheduled, 或有后台线程正在跑
   bool background_compaction_scheduled_ GUARDED_BY(mutex_);
 
   ManualCompaction* manual_compaction_ GUARDED_BY(mutex_);
 
+        // versions_ 不能指向其他变量, 但是指向的值可以修改
   VersionSet* const versions_ GUARDED_BY(mutex_);
 
   // Have we encountered a background error in paranoid mode?

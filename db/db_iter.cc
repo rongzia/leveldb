@@ -130,6 +130,7 @@ inline bool DBIter::ParseKey(ParsedInternalKey* ikey) {
   assert(bytes_until_read_sampling_ >= bytes_read);
   bytes_until_read_sampling_ -= bytes_read;
 
+            // 把 k 解析到 ikey
   if (!ParseInternalKey(k, ikey)) {
     status_ = Status::Corruption("corrupted internal key in DBIter");
     return false;
